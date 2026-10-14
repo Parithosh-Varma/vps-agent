@@ -1,133 +1,135 @@
-# vps-agent — Talk to the Training VPS from OpenCode
+<div align="center">
 
-![bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnu-bash&logoColor=white)
-![ssh](https://img.shields.io/badge/transport-ssh%20%7C%20gcloud-blue?logo=openssh&logoColor=white)
-![platform](https://img.shields.io/badge/platform-macos%20%2B%20linux-lightgrey)
-![pytorch](https://img.shields.io/badge/remote-torch%20%2B%20cuda-EE4C2C?logo=pytorch&logoColor=white)
-![status](https://img.shields.io/badge/status-active-brightgreen)
+# vps-agent
 
-> **Tags:** `opencode` `vps` `ssh` `gcloud` `cloud-shell` `gce` `training` `pytorch` `cuda` `tmux` `rsync` `jet-classifier` `remote-exec`
+### One command line to your remote training box.
 
-One wrapper for humans and agents: `tools/vps-agent/vps.sh`.
+One wrapper — **`vps.sh`** — for humans and OpenCode agents: sync data, launch
+detached GPU training, stream logs, pull the model home.\
+Over plain SSH or Google Cloud Shell. Never stores a secret.
 
-Never stores secrets — connection comes from the environment (`VPS_USER`, `VPS_HOST`, `VPS_PORT`, `VPS_KEY`, `VPS_DIR`, `VPS_MODE`). Copy `.env.example` to `~/.vpsrc`, never commit real values.
+![bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnu-bash&logoColor=white) ![transport](https://img.shields.io/badge/transport-ssh_%7C_gcloud-blue?logo=openssh&logoColor=white) ![platform](https://img.shields.io/badge/platform-macos_+_linux-lightgrey) ![remote](https://img.shields.io/badge/remote-torch_+_cuda-EE4C2C?logo=pytorch&logoColor=white) [![live demo](https://img.shields.io/badge/demo-vpsagent.pages.dev-orange)](https://vpsagent.pages.dev)
 
-<!-- keywords: vps-agent, remote training, ssh wrapper, gcloud cloud-shell, jetdb, train_v3, opencode agent -->
+**[Live walkthrough](https://vpsagent.pages.dev) · [Quickstart](#quickstart) · [Commands](#commands) · [Troubleshooting](#troubleshooting)**
 
-## Contents
+</div>
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Setup](#setup)
-  - [SSH VPS (GPU / full DB)](#ssh-vps-gpu--full-db)
-  - [Google Cloud Shell (CPU / no inbound SSH)](#google-cloud-shell-cpu--no-inbound-ssh)
-- [Agent workflow](#agent-workflow)
-- [Commands](#commands)
-- [Data sync details](#data-sync-details)
-- [Troubleshooting](#troubleshooting)
-- [Security](#security)
-- [Sharing](#sharing)
+<!-- keywords: vps-agent, remote training, ssh wrapper, gcloud cloud-shell, opencode agent, pytorch cuda, tmux -->
 
-## Features
+## How it works
 
-- Single entrypoint (`vps.sh`) usable from a shell prompt or an OpenCode agent step.
-- Two transports: plain **SSH** (`VPS_MODE=ssh`) and **Cloud Shell via `gcloud`** (`VPS_MODE=cloudshell`).
-- Dataset sync with deduplication, detached GPU training (`tmux`/`nohup`), log tailing, and one-command model pullback.
-- No secrets on disk in the repo; `doctor` prints connectivity only, never keys.
-
-## Requirements
-
-| Requirement | SSH mode | Cloud Shell mode |
-|---|---|---|
-| Local tools | `ssh`, `rsync`, `python3` | `gcloud`, `python3` |
-| Auth | SSH key on VPS (`ssh-copy-id` once) | `gcloud auth login` + authorized session |
-| Remote | Python 3 + `torch` (CUDA optional) | Python 3 + `torch` (CPU only) |
-
-## Setup
-
-Each human + agent host runs this once.
-
-### SSH VPS (GPU / full DB)
-
-```bash
-cp tools/vps-agent/.env.example ~/.vpsrc   # edit with real host/key
-source ~/.vpsrc                             # or: export VPS_USER=... VPS_HOST=...
-chmod +x tools/vps-agent/vps.sh
-tools/vps-agent/vps.sh doctor               # expect: local OK + remote line
+```mermaid
+flowchart LR
+    Local["Local — shell or OpenCode agent<br/>runs vps.sh"] --> SSH["GPU VPS over SSH<br/>rsync · full dataset"]
+    Local --> CS["Cloud Shell over gcloud<br/>CPU · 5 GB home"]
 ```
 
-SSH key auth required (once per client):
+The full run, five commands:
+
+```bash
+./vps.sh gpu                  # is there CUDA?
+./vps.sh sync-data            # laptop -> remote, deduplicated
+./vps.sh train -- --epochs 20 # detached; safe to close the terminal
+./vps.sh logs -f              # stream v3.log; Ctrl-C detaches safely
+./vps.sh pull-model           # weights + history back home, plots rendered
+```
+
+> [!NOTE]
+> Connection comes from the environment — `VPS_USER`, `VPS_HOST`, `VPS_PORT`,
+> `VPS_KEY`, `VPS_DIR`, `VPS_MODE`. Copy `.env.example` to `~/.vpsrc` and never
+> commit real values. `doctor` prints connectivity only, never keys.
+
+## Quickstart
+
+Once per human + agent host.
+
+### SSH VPS — GPU / full dataset
+
+```bash
+cp .env.example ~/.vpsrc   # edit with real host/key
+source ~/.vpsrc            # or: export VPS_USER=... VPS_HOST=...
+chmod +x vps.sh
+./vps.sh doctor            # expect: local OK + remote line
+```
+
+One-time key setup per client:
 
 ```bash
 ssh-copy-id -i ~/.ssh/id_vps user@host
 ```
 
-`doctor` prints no secrets — just `local: ... OK` and a `remote: user@host torch ... cuda ...` (or `no-torch`) line.
-
-Config used in this mode:
+`doctor` prints `local: … OK` plus `remote: user@host torch … cuda …`
+(or `no-torch` if torch isn't installed yet). Config used in this mode:
 
 ```bash
 VPS_MODE=ssh VPS_USER=ubuntu VPS_HOST=203.0.113.10 VPS_PORT=22 VPS_KEY=~/.ssh/id_vps VPS_DIR=~/jetdb
 ```
 
-### Google Cloud Shell (CPU / no inbound SSH)
+### Cloud Shell — no inbound SSH, no GPU
 
-Use when the Mac can't SSH inbound — it talks via the `gcloud` CLI instead.
+<details>
+<summary>Setup for Google Cloud Shell (CPU only)</summary>
 
 ```bash
-# Mac, once: install the gcloud CLI, then
+# once: install the gcloud CLI, then
 gcloud auth login
 gcloud cloud-shell ssh --authorize-session --command="echo ok"
 # point vps-agent at it (no USER/HOST/KEY needed)
 export VPS_MODE=cloudshell VPS_DIR=~/jetdb
-tools/vps-agent/vps.sh doctor
+./vps.sh doctor
 ```
 
-Cloud Shell limits to know:
+> [!WARNING]
+> Cloud Shell gives you a **5 GB persistent `$HOME`** — a full ~4.6 GB dataset
+> barely fits, so sync a subset first. There is **no GPU** (CPU train, slow),
+> and idle sessions can be reclaimed — `train` runs detached via `tmux`/`nohup`
+> so `logs` can reattach later.
 
-- **5 GB persistent `$HOME`** — the full ~4.6 GB DB barely fits; sync a subset first (e.g. aerosonic only).
-- **No GPU** — CPU train only, slow.
-- Idle sessions can be reclaimed — `train` launches detached via `tmux`/`nohup`, `logs` reattaches.
+> [!TIP]
+> For the full dataset plus GPU, use a GCE VM with a static IP instead —
+> same tool, `VPS_MODE=ssh`.
 
-For the full DB + GPU, use a GCE VM with a static IP instead (same tool, `VPS_MODE=ssh`).
+</details>
 
-## Agent workflow
+## Requirements
 
-Full v3 run from this repo:
-
-```bash
-tools/vps-agent/vps.sh gpu                 # is there CUDA?
-tools/vps-agent/vps.sh sync-data           # Mac -> VPS, ~4.6GB first time
-tools/vps-agent/vps.sh train -- --epochs 20
-tools/vps-agent/vps.sh logs -f             # stream; Ctrl-C detaches safely
-tools/vps-agent/vps.sh pull-model          # v3_jet.pt + history_v3.csv -> . + acc_v3.png
-```
+| | SSH mode | Cloud Shell mode |
+|---|---|---|
+| Local tools | `ssh`, `rsync`, `python3` | `gcloud`, `python3` |
+| Auth | SSH key on VPS (`ssh-copy-id` once) | `gcloud auth login` + authorized session |
+| Remote | Python 3 + `torch` (CUDA optional) | Python 3 + `torch` (CPU only) |
 
 ## Commands
 
 | Command | Does |
 |---|---|
 | `doctor` | Local deps + SSH/`gcloud` + remote `torch` check |
-| `exec -- <cmd>` | Run anything on the VPS, output back here |
+| `exec -- <cmd>` | Run anything on the remote, output back here |
 | `put <local> <remote>` / `get <remote> <local>` | Single-file copy |
-| `sync-data [--from]` | `rsync` dataset dirs (skips dupes: `quick_jets`, `archive.zip`, `kaggle_full*`); `--from` pulls VPS → `./vps_inbox/` |
+| `sync-data [--from]` | Sync dataset dirs, skipping dupes (`quick_jets`, `archive.zip`, `kaggle_full*`); `--from` pulls remote → `./vps_inbox/` |
 | `gpu` | `nvidia-smi` + `torch.cuda.is_available()` (Cloud Shell reports no GPU) |
-| `train [--epochs N]` | `combine_datasets.py` (fixes VPS paths) + detached `train_v3.py` via `tmux`/`nohup` |
-| `logs [-f]` | `tail` `v3.log` (`-f` streams) |
-| `pull-model` | Fetch `v3_jet.pt` + `history_v3.csv` to repo root, then run `make_plots_hq.py` |
-| `help` | Print usage from script header |
+| `train [--epochs N]` | `combine_datasets.py` (fixes remote paths) + detached `train_v3.py` via `tmux`/`nohup` |
+| `logs [-f]` | Last 30 lines of `v3.log`, or stream with `-f` |
+| `pull-model` | Fetch `v3_jet.pt` + `history_v3.csv` home, then render plots |
+| `help` | Print usage from the script header |
 
-Extra examples:
+<details>
+<summary>More examples — exec, put, get, reverse sync</summary>
 
 ```bash
-tools/vps-agent/vps.sh exec -- nvidia-smi
-tools/vps-agent/vps.sh put ./train_v3.py ~/jetdb/train_v3.py
-tools/vps-agent/vps.sh get ~/jetdb/v3.log ./v3-remote.log
-tools/vps-agent/vps.sh sync-data --from   # pull remote outputs to ./vps_inbox/
-tools/vps-agent/vps.sh logs               # last 30 lines without following
+./vps.sh exec -- nvidia-smi
+./vps.sh put ./train_v3.py ~/jetdb/train_v3.py
+./vps.sh get ~/jetdb/v3.log ./v3-remote.log
+./vps.sh sync-data --from   # pull remote outputs into ./vps_inbox/
+./vps.sh logs               # last 30 lines without following
 ```
 
-## Data sync details
+</details>
+
+## Data sync
+
+<details>
+<summary>Which directories sync, and how</summary>
 
 Synced dirs (`DATA_DIRS` in `vps.sh`), relative to repo root:
 
@@ -141,24 +143,27 @@ sonic_booms archive/audio
 - Cloud Shell mode has no `rsync` transport — falls back to `gcloud cloud-shell scp --recurse` per dir.
 - Raw/staging dupes (`quick_jets`, `archive.zip`, `kaggle_full*`) are intentionally excluded.
 
+</details>
+
+## Security
+
+- Secrets live only in env / `~/.vpsrc` — never in the repo.
+- SSH uses `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, 10 s connect timeout.
+- `doctor` / `gpu` output carries no keys or paths beyond `VPS_DIR`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `set VPS_USER` / `set VPS_HOST` | `source ~/.vpsrc` first, or export the vars |
 | `install gcloud CLI` | Install from <https://cloud.google.com/sdk/docs/install>, then `gcloud auth login` |
-| SSH hangs / timeout | Check `VPS_HOST`/`VPS_PORT`, security-group ingress, and `ssh -p <port> -i <key> user@host` manually |
-| `no-torch` from `doctor` | `pip install torch` on the VPS (CPU wheel is fine for a connectivity check) |
+| SSH hangs / timeout | Check `VPS_HOST`/`VPS_PORT`, security-group ingress, and try `ssh -p <port> -i <key> user@host` manually |
+| `no-torch` from `doctor` | `pip install torch` on the remote (CPU wheel is fine for a connectivity check) |
 | `no-nvidia-smi` from `gpu` | Expected on CPU-only hosts / Cloud Shell |
-
-## Security
-
-- Secrets live only in env / `~/.vpsrc` — never in the repo.
-- SSH uses `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, 10 s connect timeout.
-- `doctor` / `gpu` output contains no keys or paths beyond `VPS_DIR`.
 
 ## Sharing
 
-Commit this directory; teammates source their own `~/.vpsrc` pointing at the same (or their own) VPS. Nothing host-specific is hardcoded.
+Commit this directory; teammates source their own `~/.vpsrc` pointing at the
+same (or their own) remote. Nothing host-specific is hardcoded.
 
-Related: [`vps.sh`](./vps.sh) · [`.env.example`](./.env.example)
+Related: [`vps.sh`](./vps.sh) · [`.env.example`](./.env.example) · [interactive walkthrough](https://vpsagent.pages.dev)
